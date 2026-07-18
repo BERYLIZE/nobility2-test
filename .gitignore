@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.env
+weights/
+checkpoints/
+*.mp4
+*.wav
+!reaction_library/samples/*.mp4
+.DS_Store
