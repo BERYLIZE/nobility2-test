@@ -1,0 +1,4 @@
+{
+  "identity_image_path": "assets/reference/identity.jpg",
+  "note": "Swap this path to change AVTR-1's identity lock / appearance extraction source. Config change only, no code change."
+}
