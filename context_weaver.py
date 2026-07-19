@@ -42,7 +42,7 @@ class ContextWeaver:
     base_persona: str = "You are Nobility, a friendly and curious conversational AI assistant."
     transcript: list[str] = field(default_factory=list)
     current_summary: str = ""
-    last_refresh_ts: float = field(default_factory=lambda: 0.0)
+    last_refresh_ts: float = field(default_factory=time.time)
 
     def add_transcript_line(self, speaker: str, text: str) -> None:
         self.transcript.append(f"{speaker}: {text}")
