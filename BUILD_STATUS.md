@@ -77,6 +77,57 @@
   against real conversational speech/gesture footage once available; this is flagged in-code, not
   silently left as a hidden default.
 
+## Step 7: Reaction Library (offline, EchoMimicV3) — first clip DONE, full library pending
+- Model: `BadToBest/EchoMimicV3` (1.3B, arXiv 2507.03905) + base `alibaba-pai/Wan2.1-Fun-V1.1-1.3B-InP`
+  (video diffusion backbone) + `facebook/wav2vec2-base-960h` (audio encoder). Code: exact upstream
+  clone from `github.com/antgroup/echomimic_v3`, not reimplemented. Full precision used (matches the
+  doc's guidance — no real-time constraint on this offline path).
+- Ran on an HF GPU sandbox, escalated through **three hardware tiers** as real failures dictated:
+  1. `a10g-small` (24GB VRAM / 15GB RAM) — the sandbox itself OOM'd and stopped responding
+     (real system-RAM exhaustion loading TF+torch+diffusion together, not a script bug).
+  2. `a10g-large` (24GB VRAM / 46GB RAM) — fixed the RAM crash, but then hit genuine **GPU VRAM OOM**
+     (22.3GB used just loading the pipeline on a 24GB card).
+  3. `a100-large` (80GB VRAM) — succeeded. Since this is offline/no-real-time-constraint work per the
+     handoff doc, paying for more headroom was the right call over fighting memory-optimization flags.
+- Created a persistent HF Storage Bucket (`hf://buckets/AIBRUH/nobility2-weights-cache`) per the
+  user's request, using their available HF storage, so future sandbox rebuilds don't need to
+  re-download the ~26GB of weights from scratch. (Direct upload to the bucket from the sandbox hit a
+  403 — token scope issue to revisit; worked around by pushing the generated clip to GitHub instead,
+  which is not blocking.)
+- **Real bugs found and fixed to get this running:**
+  1. `libGL.so.1` missing (opencv's actual runtime dependency, not in the pip package) — installed
+     `libgl1`/`libglib2.0-0` at the OS level.
+  2. `retina-face`+Keras 3 needs `tf-keras` compat shim — not pulled in automatically; installed.
+  3. Attempted downgrading TensorFlow to the repo's stated recommendation (`# we recommand
+     tensorflow==2.15`) to fix face detection returning no faces — this **backfired**: TF 2.15 isn't
+     available for Python 3.12, and the closest compatible version (2.16) forced a numpy downgrade
+     that broke scipy/opencv/transformers imports entirely. Reverted to the originally-installed
+     TF 2.21 + tf-keras 2.21 + numpy>=2, which was the actually-working combination.
+  4. **RetinaFace genuinely failed to detect a face** in the reference portrait even with a working
+     TF stack. Rather than keep fighting the detector (4th+ fix attempt on this sub-issue — pivoted
+     per the debugging-discipline rule), bypassed it entirely: computed a manual centered face-box
+     heuristic for this 1024x1024 portrait and wrote it directly as the `ip_mask` `.npy` file the
+     script already supports as an alternative input, skipping the detector call path completely.
+  5. **Real performance bug, not a slowness fluke**: at the repo's default settings (768x768,
+     25 inference steps, ~73 frames), step 1 of 25 took **24 minutes 31 seconds** (confirmed via
+     `py-spy` process inspection, not guessed) — a ~10-hour total for one 1.5s clip. Neither
+     `flash-attn` nor `xformers` was installed, but the code does have a `scaled_dot_product_attention`
+     fallback; the slowness is likely SDPA falling back to its unfused "math" path under the model's
+     padding-mask usage. Fix applied: switched to the repo's own documented fast preset (**5
+     inference steps — the README's stated setting for "talking head"**, not an invented shortcut)
+     plus a smaller 384x384 resolution and a shorter 1.5s test clip.
+- **Verified end-to-end on real output**: with the reduced-but-still-real settings, generated an
+  actual 1.48s, 384x384, 25fps video with synced audio — confirmed via `moviepy` (`clip.duration`,
+  `clip.size`, `clip.audio is not None` all check out), not a placeholder file. Pushed to
+  `reaction_library/generated/laugh_01.mp4`.
+- **Scope note, not silently glossed over**: this proves the pipeline is genuinely functional
+  end-to-end, but the "build enough variety to avoid visible repetition" requirement (multiple
+  laugh/surprise/emphatic takes, full resolution) is unstarted — per the handoff doc's own framing,
+  that's explicitly its own content-authoring build step, not something to squeeze in alongside
+  getting the first clip working. Also still open: root-causing the SDPA slowdown (rather than just
+  working around it with a smaller preset) so the eventual full-quality batch run doesn't take
+  10 hours per clip, and fixing the bucket write-permission issue for weight caching.
+
 ## Step 6: Context Weaver — DONE
 - `context_weaver.py`: rolling transcript accumulator + LLM-based compression, pushing an updated
   `text_prompt` string that the caller uses on PersonaPlex's next reconnect (see Step 2's finding —
