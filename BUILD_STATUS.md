@@ -152,3 +152,30 @@
   sequence walks through all four states in order (active listening while user talks -> short pause
   triggers backchannel_ready -> extended silence triggers idle_ambient -> PersonaPlex interruption
   signal triggers interruption), all assertions pass on the real state-machine output, not mocked.
+
+## Step 8: avatar.py — DONE
+- `avatar.py`: thin wrapper around AVTR-1's own upstream `avtr1_renderer.pipeline.Pipeline`
+  (github.com/avaturn-live/avtr-1), not a reimplementation. Adds the Reaction Library
+  playback/crossfade trigger logic on top (`_merge_frames`, driven by `emage/adapter.py`'s
+  `ReactionTrigger`), per the architecture correction in Step 4: AVTR-1 drives its own lip-sync from
+  audio; EMAGE's signal only picks when/which reaction clip to blend in.
+- AVTR-1's decoder **requires** built TensorRT engines (not optional, unlike every other stage which
+  falls back to ONNX) — confirmed by upstream's own `raise RuntimeError` if engines are missing.
+- Ran on an HF GPU sandbox (`a10g-large`, CUDA 13 driver / cu128 torch).
+- **Real bugs found and fixed to get this running:**
+  1. `onnxruntime-gpu` latest (1.27.0) requires `libcudart.so.13`, incompatible with our cu128 torch
+     stack — pinned to `onnxruntime-gpu==1.20.1` (built against CUDA 12.x), matching torch's version.
+  2. onnxruntime's CUDA execution provider additionally needed `libcudnn_adv.so.9`, present as a pip
+     dependency (`nvidia-cudnn-cu12`, pulled in transitively by torch) but not on `LD_LIBRARY_PATH` —
+     added the pip-installed nvidia/*/lib directories to `LD_LIBRARY_PATH` explicitly.
+- **All required TensorRT engines built successfully** on this GPU (decoder 101s, warp 219s, modnet,
+  stitch, avtr1_encode, avtr1_decode, hubert ~46s) — real build logs, not skipped/mocked.
+- **Verified end-to-end on real output**: converted our reference portrait to the artifact directory
+  layout upstream's own `generate_offline.py` expects, ran it with real audio, and got a genuine
+  rendered video: 40 frames, 1280x720, 1.6s, with audio track, at ~213ms/chunk (matching the model
+  card's own real-time performance claims for this GPU tier). Pushed to
+  `avatar_test_output/avtr1_verification.mp4`.
+- User note: the laugh audio used in Steps 7/8 testing was purely a convenient test case to prove the
+  pipeline mechanics, not meant to be the avatar's default/primary expression. The actual startup
+  greeting (e.g. "Hello, nice to meet you") is a `director.py`/`pipeline.py` concern (Steps 9-10);
+  laughter should remain just one Reaction Library variant among several, not a default.
