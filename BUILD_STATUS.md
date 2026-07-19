@@ -199,3 +199,39 @@
   trip) then produced an actual conversation summary and correctly triggered
   `maybe_refresh()`'s scheduled reconnect -- confirmed via `reconnect_count == 1` and a second live
   WebSocket handshake with the new prompt.
+
+## Step 11: End-to-end test past the 160-240s instability mark — DONE (core proof)
+- Per the earlier GPU-cost discussion, this ran on a temporary GPU sandbox (not the persistent Space,
+  which stays on free `cpu-basic` until a real launch decision is made).
+- **Real bugs found and fixed while building this test:**
+  1. `ContextWeaver.last_refresh_ts` defaulted to epoch `0.0` instead of construction time, so
+     `due_for_refresh()` was `True` almost immediately regardless of `refresh_interval_s` -- fixed to
+     default via `time.time()`.
+  2. A genuine **upstream bug** in PersonaPlex's `server.py`: `opus_loop()` assumed
+     `opus_reader.read_pcm()` always returns an ndarray, but it can return `None`, crashing with
+     `AttributeError` and silently killing the session. Patched with a `None` guard, the same way
+     Step 2 patched the `request.query["seed"]` bug.
+  3. **Structural bug in the test client, not the product code**: an earlier version of this test
+     used discrete "send a chunk, drain responses, repeat" cycles per connection. That triggered
+     spurious server-side closes between cycles. PersonaPlex is full-duplex -- send and receive must
+     run continuously and concurrently for the life of a connection, not in bursts. Rewrote the test
+     to match (`continuous_sender` + `continuous_receiver` running concurrently, reconnecting only on
+     Context Weaver's schedule), which resolved it.
+- **Verified end-to-end on a real 215-second session** (past the documented 160-240s mark): 2 real
+  scheduled reconnects fired (at t=84.2s and t=164.7s), each backed by a genuine Context Weaver
+  summary from a live NIM API call; PersonaPlex produced real audio output continuously across all
+  three connection segments (4110 total audio bytes, 4 text tokens, not mocked).
+- **Scope note, not silently glossed over**: this proves the specific thing the handoff doc calls out
+  by name -- Context Weaver preventing PersonaPlex's native instability over a long session. It does
+  NOT yet prove all components (PersonaPlex + EMAGE + AVTR-1 + Reaction Library) running together in
+  one live process, because they currently need incompatible Python environments (PersonaPlex needs
+  torch==2.4.1, AVTR-1 needs torch>=2.5,<2.8 + TensorRT, EMAGE needs its own transformers pin) -- see
+  Steps 2/3/8's per-component environment notes. Building a real multi-process/service architecture
+  to run all three together live is follow-on work, not yet attempted. The Reaction Library's
+  crossfade logic was separately verified in isolation (see the crossfade bug fix below), with a real
+  bug caught and fixed in the process.
+- **Real bug found and fixed in `avatar.py`**: the crossfade logic jumped straight back to the raw
+  live frame the instant a Reaction Library clip finished, instead of blending back out -- a hard cut
+  the handoff doc explicitly said to avoid ("so the transition doesn't read as a hard cut"). Fixed by
+  tracking a `fade_reference_frame` so the fade-out blend actually happens; verified with
+  `scripts/test_avatar_crossfade.py` showing a real ramp (100→150→200→100) instead of a flat jump.
