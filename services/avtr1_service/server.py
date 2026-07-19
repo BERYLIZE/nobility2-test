@@ -86,9 +86,8 @@ async def handle_connection(ws, avatar):
 
 
 async def main():
-    with open(os.environ.get("NOBILITY2_REFERENCE_CONFIG", "config/reference.json")) as f:
-        pass  # build_avatar_from_config reads this itself; validated here for a clearer startup error
-    avatar = build_avatar_from_config(bg_id=os.environ.get("NOBILITY2_BG_ID", "plain_white"))
+    config_path = os.environ.get("NOBILITY2_REFERENCE_CONFIG", "config/reference.json")
+    avatar = build_avatar_from_config(config_path=config_path, bg_id=os.environ.get("NOBILITY2_BG_ID", "plain_white"))
     port = int(os.environ.get("AVTR1_SERVICE_PORT", "9001"))
 
     async def handler(ws):
