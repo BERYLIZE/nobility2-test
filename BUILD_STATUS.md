@@ -188,3 +188,14 @@
   session then returns `None` on subsequent calls; CAD classification and reaction-trigger detection
   both delegate correctly and return real (not mocked) results consistent with their standalone
   Step 4/5 verification.
+
+## Step 10: pipeline.py — DONE
+- Orchestrates PersonaPlex's connection lifecycle, Context Weaver's scheduled-refresh reconnect
+  cycle (per Step 2's verified constraint -- no mid-session hot-swap), and Director's one-time
+  greeting as the session's initial `text_prompt`.
+- **Verified end-to-end against a real running PersonaPlex server AND a real NIM API call** (not
+  mocked): `start_session()` connected to a live PersonaPlex instance using "Hello, nice to meet
+  you." as the initial `text_prompt`; a real Context Weaver `refresh()` call (genuine NIM API round
+  trip) then produced an actual conversation summary and correctly triggered
+  `maybe_refresh()`'s scheduled reconnect -- confirmed via `reconnect_count == 1` and a second live
+  WebSocket handshake with the new prompt.
