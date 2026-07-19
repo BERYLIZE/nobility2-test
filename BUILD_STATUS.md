@@ -76,3 +76,13 @@
   triggers over 28s is likely too frequent for genuine "big reaction" moments and will need tuning
   against real conversational speech/gesture footage once available; this is flagged in-code, not
   silently left as a hidden default.
+
+## Step 5: cad.py — DONE
+- No pretrained model is specified for CAD in the build spec, so built as a lightweight, swappable
+  rule-based classifier: audio-frame RMS energy (VAD proxy) + PersonaPlex's own turn-state signal
+  (speaking/listening/interrupted/backchannel) -> one of active_listening / backchannel_ready /
+  interruption / idle_ambient.
+- **Verified end-to-end** (`scripts/test_cad.py`, run locally, no GPU needed): synthetic audio
+  sequence walks through all four states in order (active listening while user talks -> short pause
+  triggers backchannel_ready -> extended silence triggers idle_ambient -> PersonaPlex interruption
+  signal triggers interruption), all assertions pass on the real state-machine output, not mocked.
