@@ -50,3 +50,29 @@
   translation, per the actual `.npz` schema above (Rot6D conversion, mentioned in the handoff doc,
   happens only in an unused commented-out code path in the upstream test script for motion-seed
   conditioning, not in the model's actual output).
+
+## Architecture correction (affects Steps 4, 8, 9) — user-approved
+- **AVTR-1's actual released code does not accept external pose/expression conditioning.**
+  Verified against `avtr1_motion_generator.py` in the real GitHub repo (avaturn-live/avtr-1): it's a
+  "speech -> motion" flow-matching model — dual-stream audio (speech + listen) goes through its own
+  HuBERT encoder, and it autoregressively generates its own lip-sync/expression using only its own
+  prior output frame as `kp_cond`. There is no parameter anywhere in the pipeline for injecting an
+  externally-generated gesture/expression curve (e.g. from EMAGE).
+- **Resolution (user-approved):** AVTR-1 drives its own lip-sync/expression directly from audio, as
+  designed. EMAGE still runs on the same audio, but its output now feeds only the Reaction Library's
+  intensity-trigger signal (and can inform `cad.py`'s classification) — it no longer tries to puppet
+  AVTR-1's face/body. This matches how both released models actually work, with no invasive patching
+  of AVTR-1's autoregressive internals.
+
+## Step 4: EMAGE output adapter — DONE
+- `emage/adapter.py`: computes per-frame gesture-energy (joint velocity, root-excluded) and
+  expression-energy (FLAME coefficient velocity) from EMAGE's real output, z-scores each channel,
+  and fires a `ReactionTrigger` (frame, time, intensity, dominant channel) when the combined signal
+  crosses a threshold, debounced to avoid rapid refiring.
+- **Verified end-to-end on genuine EMAGE output** (re-ran Step 3's inference to produce fresh real
+  data, not synthetic): 33 triggers detected across the 28.67s canned audio clip, each with a real
+  frame/timestamp/intensity/dominant-channel classification.
+- Default threshold (1.5 z-score, 15-frame/0.5s debounce) is a documented placeholder — 33
+  triggers over 28s is likely too frequent for genuine "big reaction" moments and will need tuning
+  against real conversational speech/gesture footage once available; this is flagged in-code, not
+  silently left as a hidden default.
