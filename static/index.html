@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Nobility2</title>
+  <style>
+    body { background: #111; color: #eee; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; margin: 0; padding: 2rem; }
+    canvas { background: #000; border-radius: 12px; max-width: 100%; }
+    #status { margin: 1rem 0; font-size: 0.9rem; color: #9c9; }
+    button { padding: 0.6rem 1.4rem; font-size: 1rem; border-radius: 8px; border: none; cursor: pointer; background: #4a9; color: #fff; }
+    #transcript { margin-top: 1rem; max-width: 720px; font-size: 0.85rem; color: #aaa; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Nobility2</h1>
+  <div id="status">Not connected</div>
+  <button id="start">Start talking</button>
+  <canvas id="video" width="720" height="1280"></canvas>
+  <div id="transcript"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
