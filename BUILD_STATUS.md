@@ -77,6 +77,21 @@
   against real conversational speech/gesture footage once available; this is flagged in-code, not
   silently left as a hidden default.
 
+## Step 6: Context Weaver — DONE
+- `context_weaver.py`: rolling transcript accumulator + LLM-based compression, pushing an updated
+  `text_prompt` string that the caller uses on PersonaPlex's next reconnect (see Step 2's finding —
+  no mid-session hot-swap exists, so this is the scheduled-reconnect fallback, not an invisible swap).
+- LLM backend: NVIDIA NIM API (`https://integrate.api.nvidia.com/v1/chat/completions`), using the
+  connected `NVIDIA_API_KEY`.
+- **Real bug found during testing**: `nvidia/llama-3.1-nemotron-nano-8b-v1` (the initially chosen
+  model) hangs indefinitely on this endpoint — connects fine, sends the request, then 0 bytes ever
+  come back (tested with curl directly, both streaming and non-streaming, up to 25s). Not a client
+  timeout tuning issue; the model/endpoint itself doesn't respond. Switched to
+  `meta/llama-3.1-8b-instruct`, which responds in ~100ms and is confirmed reliable.
+- **Verified end-to-end with a real API call**: fed a synthetic 5-line conversation transcript
+  through `refresh()`; got back a genuine, content-aware summary correctly referencing the actual
+  discussed topics (Nobility2, AVTR-1, lip sync) — not a stub or canned response.
+
 ## Step 5: cad.py — DONE
 - No pretrained model is specified for CAD in the build spec, so built as a lightweight, swappable
   rule-based classifier: audio-frame RMS energy (VAD proxy) + PersonaPlex's own turn-state signal
