@@ -51,10 +51,30 @@ class AvatarState:
     fade_reference_frame: object = None  # last clip frame, held for the fade-back-to-live blend
 
 
+def _env_float(name: str, default: float) -> float:
+    import os
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 class Avatar:
     """Wraps AVTR-1's Pipeline + a Reaction Library, exposing one
     process_chunk-like call that transparently swaps in reaction clips on
     high-intensity triggers instead of live-rendering them.
+
+    Realism tuning (all env-overridable, no engine rebuild needed -- these
+    are per-chunk RenderOptions inputs per upstream types.py):
+    - cfg_self_audio: how strongly her OWN speech drives articulation.
+      Slightly above upstream default (2.0 -> 2.3) for crisper lip-sync.
+    - cfg_other_audio: how strongly the USER's speech drives listening
+      reactions (nods, micro-expressions). Upstream default 2.0.
+    - cfg_kp: identity/pose stability. Upstream default 3.0 -- kept; raising
+      it flattens expressiveness, lowering it drifts identity.
+    - noise_trunc_z: caps the AR(1) idle-motion noise. Slightly below
+      upstream default (1.2 -> 1.1) to trim occasional jerky outliers while
+      keeping natural micro-motion alive.
     """
 
     def __init__(self, pipeline, avatar_handle, reaction_library: dict[str, ReactionClip],
@@ -64,6 +84,18 @@ class Avatar:
         self._reaction_library = reaction_library
         self._bg_id = bg_id
         self._intensity_threshold = intensity_threshold
+        self._render_options = None  # built lazily; needs avtr1_renderer importable
+
+    def _build_render_options(self):
+        from avtr1_renderer.types import RenderOptions
+        return RenderOptions(
+            bg_id=self._bg_id,
+            cfg_self_audio=_env_float("NOBILITY2_CFG_SELF_AUDIO", 2.3),
+            cfg_other_audio=_env_float("NOBILITY2_CFG_OTHER_AUDIO", 2.0),
+            cfg_kp=_env_float("NOBILITY2_CFG_KP", 3.0),
+            noise_alpha=_env_float("NOBILITY2_NOISE_ALPHA", 2.0),
+            noise_trunc_z=_env_float("NOBILITY2_NOISE_TRUNC_Z", 1.1),
+        )
 
     def initial_state(self) -> AvatarState:
         return AvatarState(pipeline_state=self._pipeline.initial_state(self._avatar))
@@ -77,10 +109,11 @@ class Avatar:
         itself doesn't consume live pipeline compute -- but the live
         pipeline keeps running underneath so we can crossfade back out.
         """
-        from avtr1_renderer.types import RenderOptions
+        if self._render_options is None:
+            self._render_options = self._build_render_options()
 
         pipeline_state, live_frames = self._pipeline.process_chunk(
-            self._avatar, chunk, state.pipeline_state, RenderOptions(bg_id=self._bg_id),
+            self._avatar, chunk, state.pipeline_state, self._render_options,
         )
         state.pipeline_state = pipeline_state
 

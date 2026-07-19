@@ -95,6 +95,49 @@ until curl -sf http://localhost:8998/ > /dev/null 2>&1; do
 done
 echo "PersonaPlex ready."
 
+start_app() {
+  cd /app
+  PYTHONPATH=/app /opt/venv-app/bin/python -m uvicorn app:app \
+    --host 0.0.0.0 --port 7860 > /var/log/app.log 2>&1 &
+}
+
+start_personaplex() {
+  cd /data/personaplex
+  CUDA_VISIBLE_DEVICES=0 /opt/venv-personaplex/bin/python -m moshi.server \
+    --host 0.0.0.0 --port 8998 \
+    --moshi-weight /data/personaplex/model.safetensors \
+    --mimi-weight /data/personaplex/tokenizer-e351c8d8-checkpoint125.safetensors \
+    --tokenizer /data/personaplex/tokenizer_spm_32k_3.model \
+    --voice-prompt-dir /data/personaplex/voices/voices \
+    --device cuda >> /var/log/personaplex.log 2>&1 &
+}
+
+start_avtr1() {
+  cd /opt/avtr1-code
+  CUDA_VISIBLE_DEVICES=1 NOBILITY2_REFERENCE_CONFIG=/app/config/reference.json \
+    /opt/venv-avtr1/bin/python /app/services/avtr1_service/server.py >> /var/log/avtr1.log 2>&1 &
+}
+
 echo "Starting main app on :7860..."
-cd /app
-exec /opt/venv-app/bin/python -m uvicorn app:app --host 0.0.0.0 --port 7860
+start_app
+
+# --- 5. Watchdog: self-healing supervision -------------------------------
+# Any service that dies gets restarted (with a log line), instead of the
+# whole Space silently degrading until someone notices. This loop is the
+# container's foreground process.
+echo "All services up. Supervising."
+while true; do
+  sleep 5
+  if ! pgrep -f "moshi.server" > /dev/null; then
+    echo "$(date +%T) WATCHDOG: PersonaPlex died -- restarting (see /var/log/personaplex.log)"
+    start_personaplex
+  fi
+  if ! pgrep -f "avtr1_service/server.py" > /dev/null; then
+    echo "$(date +%T) WATCHDOG: AVTR-1 died -- restarting (see /var/log/avtr1.log)"
+    start_avtr1
+  fi
+  if ! pgrep -f "uvicorn app:app" > /dev/null; then
+    echo "$(date +%T) WATCHDOG: main app died -- restarting (see /var/log/app.log)"
+    start_app
+  fi
+done

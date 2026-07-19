@@ -48,6 +48,9 @@ class ContextWeaver:
         self.transcript.append(f"{speaker}: {text}")
 
     def due_for_refresh(self, now: float | None = None) -> bool:
+        if not self.api_key:
+            # Degraded mode (no NIM key): never refresh; base persona only.
+            return False
         now = now if now is not None else time.time()
         return (now - self.last_refresh_ts) >= self.refresh_interval_s
 
@@ -91,7 +94,10 @@ class ContextWeaver:
 
 
 def build_from_env() -> ContextWeaver:
-    api_key = os.environ.get("NVIDIA_API_KEY") or os.environ.get("NGC_CLI_API_KEY")
-    if not api_key:
-        raise RuntimeError("NVIDIA_API_KEY (or NGC_CLI_API_KEY) not set in environment")
+    api_key = os.environ.get("NVIDIA_API_KEY") or os.environ.get("NGC_CLI_API_KEY") or ""
+    if not api_key or api_key == "placeholder":
+        # Don't kill live sessions over a missing summarizer key -- run
+        # degraded (base persona, no rolling summary) and say so once.
+        print("context_weaver: no NVIDIA_API_KEY -- running without rolling summaries", flush=True)
+        api_key = ""
     return ContextWeaver(api_key=api_key)

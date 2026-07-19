@@ -77,6 +77,13 @@ async def session_ws(browser_ws: WebSocket):
 
     opus_reader = sphn.OpusStreamReader(PERSONAPLEX_SAMPLE_RATE)
     opus_writer = sphn.OpusStreamWriter(PERSONAPLEX_SAMPLE_RATE)
+    # Streaming resamplers, one per direction, held for the whole session:
+    # stateless per-chunk soxr.resample() restarts the filter at every chunk
+    # boundary, which puts a small discontinuity (audible tick) at each seam.
+    # ResampleStream carries filter state across chunks -- cleaner audio and
+    # cheaper than re-windowing every call.
+    mic_resampler = soxr.ResampleStream(BROWSER_SAMPLE_RATE, PERSONAPLEX_SAMPLE_RATE, 1, dtype="float32")
+    speech_resampler = soxr.ResampleStream(PERSONAPLEX_SAMPLE_RATE, AVTR1_SAMPLE_RATE, 1, dtype="float32")
     close = False
 
     async def browser_to_services():
@@ -87,7 +94,7 @@ async def session_ws(browser_ws: WebSocket):
             while True:
                 data = await browser_ws.receive_bytes()
                 pcm16k = np.frombuffer(data, dtype=np.float32)
-                pcm24k = soxr.resample(pcm16k, BROWSER_SAMPLE_RATE, PERSONAPLEX_SAMPLE_RATE, quality="HQ").astype(np.float32)
+                pcm24k = mic_resampler.resample_chunk(pcm16k).astype(np.float32)
                 # Feed PersonaPlex exactly one Opus frame (1920 @ 24k) at a time.
                 mic_buffer = np.concatenate([mic_buffer, pcm24k])
                 while len(mic_buffer) >= OPUS_FRAME_24K:
@@ -118,8 +125,9 @@ async def session_ws(browser_ws: WebSocket):
                     if pcm24k is None or pcm24k.shape[-1] == 0:
                         continue
                     await browser_ws.send_bytes(b"\x01" + pcm24k.astype(np.float32).tobytes())
-                    pcm16k = soxr.resample(pcm24k, PERSONAPLEX_SAMPLE_RATE, AVTR1_SAMPLE_RATE, quality="HQ").astype(np.float32)
-                    await avtr1_ws.send(b"\x01" + pcm16k.tobytes())
+                    pcm16k = speech_resampler.resample_chunk(pcm24k.astype(np.float32)).astype(np.float32)
+                    if pcm16k.shape[-1] > 0:
+                        await avtr1_ws.send(b"\x01" + pcm16k.tobytes())
                 elif kind == 2:
                     text = msg[1:].decode("utf-8", errors="replace")
                     context_weaver.add_transcript_line("Agent", text)
