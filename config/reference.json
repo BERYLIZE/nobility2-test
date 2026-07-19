@@ -1,4 +1,8 @@
 {
   "identity_image_path": "assets/reference/identity.jpg",
-  "note": "Swap this path to change AVTR-1's identity lock / appearance extraction source. Config change only, no code change."
+  "identity_image_candidates": [
+    "assets/reference/identity.jpg",
+    "assets/reference/identity_2.png"
+  ],
+  "note": "identity_image_path is the active AVTR-1 identity lock source. Swap it (or reorder candidates) to change appearance extraction. Config change only, no code change."
 }
