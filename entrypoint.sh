@@ -29,7 +29,9 @@ fi
 
 if ! find /data/avtr1-artifacts -iname '*.engine' | grep -q .; then
   echo "Building TensorRT engines (~10 min, first boot only, GPU-specific)..."
-  /opt/venv-avtr1/bin/python scripts/build_engines.py
+  # Build on GPU 1 -- the card AVTR-1 actually runs on (see Step 12 note
+  # below); TRT engines are tied to the building GPU's architecture.
+  CUDA_VISIBLE_DEVICES=1 /opt/venv-avtr1/bin/python scripts/build_engines.py
 fi
 
 # --- 3. Reference portrait: convert once, place where AVTR-1 expects it -
@@ -49,9 +51,20 @@ cat > /app/config/reference.json <<EOF
 EOF
 
 # --- 4. Start the two model services + main app --------------------------
-echo "Starting PersonaPlex service..."
+# GPU split (see BUILD_STATUS.md Step 12): PersonaPlex-7B alone needs ~19GB
+# (Moshi's own docs: "24GB, no quantization support" -- confirmed via NVIDIA's
+# model card recommending A100/H100). AVTR-1 needs ~3.5GB steady-state but
+# spikes during rendering. Co-resident on one 24GB card, the two only have
+# soft VRAM-sharing tools available (ORT arena caps, kSameAsRequested) which
+# don't give hard isolation -- whichever process allocates first wins, the
+# other can starve and OOM mid-render (reproduced repeatedly in testing).
+# No real deployment of this model class runs two heavy models co-resident
+# on one GPU (NVIDIA's own ACE/digital-human blueprint keeps ASR/LLM/render
+# on separate GPUs/nodes) -- so each model gets its own dedicated GPU here
+# instead of continuing to fight VRAM contention in software.
+echo "Starting PersonaPlex service (GPU 0)..."
 cd /data/personaplex
-/opt/venv-personaplex/bin/python -m moshi.server \
+CUDA_VISIBLE_DEVICES=0 /opt/venv-personaplex/bin/python -m moshi.server \
   --host 0.0.0.0 --port 8998 \
   --moshi-weight /data/personaplex/model.safetensors \
   --mimi-weight /data/personaplex/tokenizer-e351c8d8-checkpoint125.safetensors \
@@ -59,13 +72,27 @@ cd /data/personaplex
   --voice-prompt-dir /data/personaplex/voices/voices \
   --device cuda > /var/log/personaplex.log 2>&1 &
 
-echo "Starting AVTR-1 rendering service..."
+echo "Starting AVTR-1 rendering service (GPU 1)..."
 cd /opt/avtr1-code
-NOBILITY2_REFERENCE_CONFIG=/app/config/reference.json \
+CUDA_VISIBLE_DEVICES=1 NOBILITY2_REFERENCE_CONFIG=/app/config/reference.json \
   /opt/venv-avtr1/bin/python /app/services/avtr1_service/server.py > /var/log/avtr1.log 2>&1 &
 
-echo "Waiting for model services to be ready..."
-until curl -sf http://localhost:8998/ > /dev/null 2>&1; do sleep 2; done
+echo "Waiting for AVTR-1 to finish loading..."
+until grep -q "listening on" /var/log/avtr1.log 2>/dev/null; do
+  if ! pgrep -f "avtr1_service/server.py" > /dev/null; then
+    echo "AVTR-1 service died during load:"; tail -40 /var/log/avtr1.log; exit 1
+  fi
+  sleep 2
+done
+echo "AVTR-1 ready."
+
+echo "Waiting for PersonaPlex to be ready..."
+until curl -sf http://localhost:8998/ > /dev/null 2>&1; do
+  if ! pgrep -f "moshi.server" > /dev/null; then
+    echo "PersonaPlex service died during load:"; tail -40 /var/log/personaplex.log; exit 1
+  fi
+  sleep 2
+done
 echo "PersonaPlex ready."
 
 echo "Starting main app on :7860..."

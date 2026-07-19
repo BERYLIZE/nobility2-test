@@ -39,6 +39,12 @@ BROWSER_SAMPLE_RATE = 16000  # requested from getUserMedia; see static/app.js
 PERSONAPLEX_SAMPLE_RATE = 24000
 AVTR1_SAMPLE_RATE = 16000
 
+# sphn's OpusStreamWriter.append_pcm accepts only exact Opus frame sizes
+# [120,240,480,960,1920,2880]. PersonaPlex's own server always feeds one
+# mimi frame (sample_rate/frame_rate = 24000/12.5 = 1920) per call, so we
+# mirror that: buffer the resampled mic PCM and emit 1920-sample frames.
+OPUS_FRAME_24K = 1920
+
 
 @app.get("/")
 def root():
@@ -76,15 +82,21 @@ async def session_ws(browser_ws: WebSocket):
     async def browser_to_services():
         """Mic PCM from the browser -> PersonaPlex (opus, 24k) + AVTR-1 listen track (16k, native)."""
         nonlocal close
+        mic_buffer = np.zeros(0, dtype=np.float32)
         try:
             while True:
                 data = await browser_ws.receive_bytes()
                 pcm16k = np.frombuffer(data, dtype=np.float32)
                 pcm24k = soxr.resample(pcm16k, BROWSER_SAMPLE_RATE, PERSONAPLEX_SAMPLE_RATE, quality="HQ").astype(np.float32)
-                opus_writer.append_pcm(pcm24k)
-                opus_bytes = opus_writer.read_bytes()
-                if opus_bytes:
-                    await pipeline._ws.send(b"\x01" + opus_bytes)
+                # Feed PersonaPlex exactly one Opus frame (1920 @ 24k) at a time.
+                mic_buffer = np.concatenate([mic_buffer, pcm24k])
+                while len(mic_buffer) >= OPUS_FRAME_24K:
+                    frame = mic_buffer[:OPUS_FRAME_24K]
+                    mic_buffer = mic_buffer[OPUS_FRAME_24K:]
+                    opus_writer.append_pcm(frame)
+                    opus_bytes = opus_writer.read_bytes()
+                    if opus_bytes:
+                        await pipeline._ws.send(b"\x01" + opus_bytes)
                 await avtr1_ws.send(b"\x02" + pcm16k.astype(np.float32).tobytes())
         except WebSocketDisconnect:
             pass
@@ -134,13 +146,22 @@ async def session_ws(browser_ws: WebSocket):
                 await pipeline.maybe_refresh(state)
 
     tasks = [
-        asyncio.create_task(browser_to_services()),
-        asyncio.create_task(personaplex_to_services()),
-        asyncio.create_task(avtr1_to_browser()),
-        asyncio.create_task(refresh_loop()),
+        asyncio.create_task(browser_to_services(), name="browser_to_services"),
+        asyncio.create_task(personaplex_to_services(), name="personaplex_to_services"),
+        asyncio.create_task(avtr1_to_browser(), name="avtr1_to_browser"),
+        asyncio.create_task(refresh_loop(), name="refresh_loop"),
     ]
     try:
-        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        # Any one of these four tasks returning tears the whole session down
+        # (FIRST_COMPLETED). Log which one and why -- whether it raised or
+        # just returned -- since that's otherwise invisible from outside.
+        for t in done:
+            exc = t.exception()
+            print(f"session bridge task exited: {t.get_name()} exc={exc!r}", flush=True)
+            if exc is not None:
+                import traceback
+                print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)), flush=True)
     finally:
         close = True
         for t in tasks:

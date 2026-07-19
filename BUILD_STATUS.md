@@ -235,3 +235,63 @@
   the handoff doc explicitly said to avoid ("so the transition doesn't read as a hard cut"). Fixed by
   tracking a `fade_reference_frame` so the fade-out blend actually happens; verified with
   `scripts/test_avatar_crossfade.py` showing a real ramp (100→150→200→100) instead of a flat jump.
+
+## Step 12: MVP launch (PersonaPlex + AVTR-1 live, EMAGE/Reaction Library fast-follow) — IN PROGRESS
+User asked to see the live avatar for real; scope narrowed to voice+face MVP now, per explicit choice,
+with EMAGE/Reaction Library wired in as a fast-follow once the MVP is proven end-to-end.
+
+- **Multi-venv Docker architecture**: three isolated venvs in one image (`venv-personaplex` torch==2.4.1,
+  `venv-avtr1` torch>=2.5.1,<2.8 + TensorRT<=10.12, `venv-app` no torch), bridged via localhost
+  WebSockets from a lightweight FastAPI orchestrator (`app.py`). Forced by the two models' mutually
+  incompatible torch/TensorRT requirements (see Steps 2 and 8) -- not a version compromise, since the
+  ranges genuinely don't overlap.
+- **Real bug (AVTR-1 service)**: `build_avatar_from_config()` was called without `config_path=`,
+  silently falling back to a relative default that didn't resolve from `/opt/avtr1-code`'s working
+  directory. Fixed by passing `config_path=config_path` through explicitly (commit `dd7263c`).
+- **Real bug (sphn version drift)**: the app venv's unpinned `sphn` resolved to 0.2.1, which dropped/
+  renamed `OpusStreamWriter.read_bytes` and `OpusStreamReader.read_pcm` -- both called directly by
+  `app.py`'s bridge (copied from PersonaPlex's own `server.py` pattern, which uses `sphn==0.1.12`).
+  Fixed by pinning `sphn==0.1.12` in the app venv's Dockerfile install line, matching PersonaPlex's pin.
+- **Real bug (Opus frame sizing)**: `app.py` fed `OpusStreamWriter.append_pcm()` whatever chunk size
+  arrived from the browser (e.g. 6144 samples) and crashed with `pcm length has to match an allowed
+  frame size [120, 240, 480, 960, 1920, 2880]`. PersonaPlex's own `server.py` always feeds exactly one
+  Mimi frame (`sample_rate/frame_rate` = 24000/12.5 = 1920 samples) per call. Fixed by buffering the
+  resampled mic PCM in `app.py` and draining it in fixed 1920-sample frames.
+- **Restart-verification bug (mine, not upstream)**: lost roughly an hour re-testing against a *stale*
+  uvicorn process because `fuser -k 7860/tcp` was silently a no-op (likely absent on the slim image)
+  and a `pkill -f 'venv-app/bin/python'` self-matched and killed the issuing shell instead of the
+  target. `curl /health` kept returning healthy from the old zombie process, masking every subsequent
+  code fix. Fixed the *procedure*, not the code: kill by explicit numeric PID, confirm the process is
+  actually gone via `ps` before treating a health check as meaningful, then restart.
+- **Architecture finding, not a bug -- co-resident single-GPU VRAM contention is fundamentally
+  unworkable for this pair of models.** PersonaPlex alone holds ~19GB on a 24GB A10G; AVTR-1 holds
+  ~3.5GB steady-state but spikes during live rendering. Repeated real OOMs during actual per-frame
+  inference (`torch.OutOfMemoryError: ... Tried to allocate 20.00 MiB ... 3.75 MiB free`), not just at
+  load time. After four straight failed tuning attempts (ORT arena `gpu_mem_limit` 2GB→384MB,
+  `cudnn_conv_algo_search: HEURISTIC`, cuDNN `LD_LIBRARY_PATH` fix), per the handoff doc's own standing
+  order, pivoted to researching reference implementations instead of continuing to guess at allocator
+  knobs. Findings, each independently confirmed with citations:
+  - NVIDIA's own `personaplex-7b-v1` model card lists A100/H100 as the tested/supported tier; upstream
+    Moshi's README states outright "we do not support quantization ... you will need a GPU with a
+    significant amount of memory (24GB)" -- ~19GB usage is expected behavior, not a misconfiguration.
+    The only documented VRAM lever is `--cpu-offload` (trades latency, unsuitable for live conversation).
+  - AVTR-1 (avaturn-live) publishes no VRAM budget at all and has no config knob to shrink its per-frame
+    allocations (confirmed by reading `putback.py` directly -- the alpha-matte `torch.ones()` call is
+    unconditional, sized to crop resolution, not tunable).
+  - No existing working project runs a full-duplex speech model and a live avatar renderer co-resident
+    on one GPU. Real implementations either run the pipeline sequentially/turn-based (avoiding true
+    concurrency, which defeats full-duplex) or put each heavy model on its own GPU (NVIDIA's own
+    ACE/digital-human blueprint keeps ASR/LLM/rendering as separate microservices on separate hardware).
+    `torch.cuda.set_per_process_memory_fraction` and ORT arena caps are soft limits with no enforced
+    isolation between processes (confirmed via two independent PyTorch issues, #69688 and #107667) --
+    whichever process allocates first wins, the other can still starve. Hard isolation (MIG) needs
+    A100/H100-class hardware, not available on A10G.
+  - **Decision: split the two models across two GPUs** (`CUDA_VISIBLE_DEVICES=0` for PersonaPlex,
+    `=1` for AVTR-1) rather than continuing to fight VRAM contention in software. Space/sandbox
+    hardware moved to a 2-GPU flavor (`a10g-largex2`); `entrypoint.sh` updated to pin each service to
+    its own GPU and to build AVTR-1's TensorRT engines on GPU 1 specifically, since TRT engines are
+    tied to the building GPU's architecture. This removes the fragile "AVTR-1 must load first, before
+    PersonaPlex claims VRAM" ordering hack that step 12's earlier attempts relied on.
+- Verification of the 2-GPU split and the full `/ws/session` bridge (real synthetic audio in, real
+  PersonaPlex speech + real AVTR-1 video frames out) is in progress on sandbox `a10g-largex2` -- not yet
+  claimed complete pending that run.

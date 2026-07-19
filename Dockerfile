@@ -28,11 +28,21 @@ RUN /opt/venv-avtr1/bin/pip install --no-cache-dir \
     opencv-python-headless tqdm attrs tenacity kornia scikit-image soxr roma av soundfile \
     safetensors httpx fastapi uvicorn python-multipart onnx onnx-graphsurgeon anyio einops \
     numpy websockets Pillow -e /opt/avtr1-code
+# onnxruntime CUDA arena tuning (see BUILD_STATUS.md Step 12): AvatarLoader
+# opens 5 ONNX sessions concurrently; ORT's default BFCArena over-reserves
+# VRAM per session, so with PersonaPlex co-resident these small allocations
+# fail. Cap each session's arena (kSameAsRequested, 384MB) and use the
+# heuristic conv-algo search (EXHAUSTIVE search reserves large scratch).
+RUN sed -i 's#"user_compute_stream": str(ep_stream.cuda_stream),#"user_compute_stream": str(ep_stream.cuda_stream),\n            "arena_extend_strategy": "kSameAsRequested",\n            "gpu_mem_limit": 384 * 1024 * 1024,\n            "cudnn_conv_algo_search": "HEURISTIC",\n            "do_copy_in_default_stream": True,#' \
+    /opt/avtr1-code/src/avtr1_renderer/runtime/onnxrt.py
 
 # --- main app venv (lightweight, no torch) ------------------------------
 RUN python3 -m venv /opt/venv-app
+# sphn must match PersonaPlex's pinned 0.1.12 (see BUILD_STATUS.md Step 12):
+# sphn 0.2.x renamed/dropped OpusStreamWriter.read_bytes and
+# OpusStreamReader.read_pcm, which app.py's bridge calls directly.
 RUN /opt/venv-app/bin/pip install --no-cache-dir \
-    fastapi uvicorn websockets soxr sphn numpy requests python-multipart
+    fastapi uvicorn websockets soxr 'sphn==0.1.12' numpy requests python-multipart
 
 COPY . /app
 RUN chmod +x /app/entrypoint.sh
