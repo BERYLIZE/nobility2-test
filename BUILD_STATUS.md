@@ -179,3 +179,12 @@
   pipeline mechanics, not meant to be the avatar's default/primary expression. The actual startup
   greeting (e.g. "Hello, nice to meet you") is a `director.py`/`pipeline.py` concern (Steps 9-10);
   laughter should remain just one Reaction Library variant among several, not a default.
+
+## Step 9: director.py — DONE
+- Orchestrates `cad.py`'s activity classification and `emage/adapter.py`'s Reaction Library trigger
+  detection, plus owns the one-time session greeting ("Hello, nice to meet you." -- a plain calm
+  line, per the user's direction that laughter/reactions are not the default first thing she says).
+- **Verified end-to-end** (`scripts/test_director.py`, run locally): greeting fires exactly once per
+  session then returns `None` on subsequent calls; CAD classification and reaction-trigger detection
+  both delegate correctly and return real (not mocked) results consistent with their standalone
+  Step 4/5 verification.
