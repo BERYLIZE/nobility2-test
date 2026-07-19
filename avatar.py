@@ -48,7 +48,7 @@ class AvatarState:
     active_clip: Optional[ReactionClip] = None
     active_clip_frame_idx: int = 0
     crossfade_remaining: int = 0
-    crossfade_from_live: bool = True  # True = blending live->clip, False = clip->live
+    fade_reference_frame: object = None  # last clip frame, held for the fade-back-to-live blend
 
 
 class Avatar:
@@ -90,7 +90,6 @@ class Avatar:
                 state.active_clip = clip
                 state.active_clip_frame_idx = 0
                 state.crossfade_remaining = CROSSFADE_FRAMES
-                state.crossfade_from_live = True
 
         return state, self._merge_frames(live_frames, state)
 
@@ -105,16 +104,26 @@ class Avatar:
         advancing state.active_clip playback and the fade counter."""
         for live_frame in live_frames:
             if state.active_clip is None:
-                yield live_frame
+                if state.crossfade_remaining > 0 and state.fade_reference_frame is not None:
+                    # Fading back out of the just-finished clip toward live.
+                    alpha = state.crossfade_remaining / CROSSFADE_FRAMES
+                    yield _blend_frames(state.fade_reference_frame, live_frame, alpha)
+                    state.crossfade_remaining -= 1
+                    if state.crossfade_remaining == 0:
+                        state.fade_reference_frame = None
+                else:
+                    yield live_frame
                 continue
 
             clip = state.active_clip
             if state.active_clip_frame_idx >= len(clip.frames):
-                # Clip finished -- start blending back to live.
+                # Clip finished -- start blending back to live using its last frame as reference.
+                state.fade_reference_frame = clip.frames[-1]
                 state.active_clip = None
                 state.crossfade_remaining = CROSSFADE_FRAMES
-                state.crossfade_from_live = False
-                yield live_frame
+                alpha = state.crossfade_remaining / CROSSFADE_FRAMES
+                yield _blend_frames(state.fade_reference_frame, live_frame, alpha)
+                state.crossfade_remaining -= 1
                 continue
 
             clip_frame = clip.frames[state.active_clip_frame_idx]
@@ -122,8 +131,7 @@ class Avatar:
 
             if state.crossfade_remaining > 0:
                 alpha = state.crossfade_remaining / CROSSFADE_FRAMES
-                a, b = (live_frame, clip_frame) if state.crossfade_from_live else (clip_frame, live_frame)
-                yield _blend_frames(a, b, alpha)
+                yield _blend_frames(live_frame, clip_frame, alpha)
                 state.crossfade_remaining -= 1
             else:
                 yield clip_frame
